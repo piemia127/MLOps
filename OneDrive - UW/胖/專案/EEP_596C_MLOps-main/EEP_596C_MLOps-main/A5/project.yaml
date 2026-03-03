@@ -1,0 +1,117 @@
+kind: project
+spec:
+  desired_state: online
+  functions:
+  - url: db://fraud-demo-jovyan/get-vector
+    name: get-vector
+    kind: job
+  - url: db://fraud-demo-jovyan/feature-selection
+    name: feature-selection
+    kind: job
+  - url: db://fraud-demo-jovyan/train
+    name: train
+    kind: job
+  - url: db://fraud-demo-jovyan/evaluate
+    name: evaluate
+    kind: job
+  - url: db://fraud-demo-jovyan/serving
+    name: serving
+    kind: job
+  params:
+    online_target: ds://fraud-tsdb
+    transactions: s3://mlrun/projects/fraud-demo-jovyan/artifacts/transactions.pq
+    events: s3://mlrun/projects/fraud-demo-jovyan/artifacts/events.pq
+    labels: s3://mlrun/projects/fraud-demo-jovyan/artifacts/labels.pq
+    transaction_stream: kafka://kafka-stream.mlrun.svc.cluster.local:9092?topic=transactions
+    events_stream: kafka://kafka-stream.mlrun.svc.cluster.local:9092?topic=events
+  load_source_on_run: true
+  workflows:
+  - name: main
+    code: "# Copyright 2024 Iguazio\n#\n# Licensed under the Apache License, Version\
+      \ 2.0 (the \"License\");\n# you may not use this file except in compliance with\
+      \ the License.\n# You may obtain a copy of the License at\n#\n#     http://www.apache.org/licenses/LICENSE-2.0\n\
+      #\n# Unless required by applicable law or agreed to in writing, software\n#\
+      \ distributed under the License is distributed on an \"AS IS\" BASIS,\n# WITHOUT\
+      \ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n# See the\
+      \ License for the specific language governing permissions and\n# limitations\
+      \ under the License.\n#\nimport mlrun\nfrom kfp import dsl\nimport os\n\nfrom\
+      \ mlrun.model import HyperParamOptions\nfrom mlrun.datastore.datastore_profile\
+      \ import DatastoreProfileKafkaStream, DatastoreProfileTDEngine\n\n\n# Create\
+      \ a Kubeflow Pipelines pipeline\n@dsl.pipeline(\n    name=\"Fraud Detection\
+      \ Pipeline\",\n    description=\"Detecting fraud from a transactions dataset\"\
+      ,\n)\ndef pipeline(vector_name=\"transactions-fraud\", features=[], label_column=\"\
+      is_error\"):\n    \"\"\"\n    This pipeline will train a model to detect fraud\
+      \ from a transactions dataset.\n    :param vector_name: The name of the feature\
+      \ vector to use\n    :param features: A list of features to use\n    :param\
+      \ label_column: The name of the label column\n\n    :returns: None\n    \"\"\
+      \"\n    \n    # Get the project\n    project = mlrun.get_current_project() \
+      \ \n\n    # Get FeatureVector\n    get_vector_func = project.get_function(\"\
+      get-vector\")\n    get_vector_run = project.run_function(\n        get_vector_func,\n\
+      \        name=\"get-vector\",\n        params={\n            \"feature_vector\"\
+      : vector_name,\n            \"features\": features,\n            \"label_feature\"\
+      : label_column,\n            \"target\": {\"name\": \"parquet\", \"kind\": \"\
+      parquet\"},\n            \"update_stats\": True,\n        },\n        outputs\
+      \ = [\n            \"feature_vector\"\n        ]\n    )\n    \n    # Feature\
+      \ selection\n    feature_selection_func = project.get_function(\"feature-selection\"\
+      )\n    feature_selection_run = project.run_function(\n        feature_selection_func,\n\
+      \        name=\"feature-selection\",\n        params={\n            \"output_vector_name\"\
+      : \"short\",\n            \"label_column\": project.get_param(\"label_column\"\
+      , \"label\"),\n            \"k\": 18,\n            \"min_votes\": 2,\n     \
+      \       \"ignore_type_errors\": True,\n        },\n        inputs={\n      \
+      \      \"df_artifact\": project.get_artifact_uri(vector_name, \"feature-vector\"\
+      )\n        },\n        outputs=[\n            \"feature_scores\",\n        \
+      \    \"selected_features_count\",\n            \"top_features_vector\",\n  \
+      \          \"selected_features\",\n        ],\n    ).after(get_vector_run)\n\
+      \n    # train with hyper-paremeters\n    train_func = project.get_function(\"\
+      train\")\n    train_run = project.run_function(\n        train_func,\n     \
+      \   name=\"train\",\n        handler=\"train\",\n        params={\n        \
+      \    \"sample\": -1,\n            \"label_column\": project.get_param(\"label_column\"\
+      , \"label\"),\n            \"test_size\": 0.10,\n        },\n        hyperparams={\n\
+      \            \"model_name\": [\n                \"transaction_fraud_rf\",\n\
+      \                \"transaction_fraud_xgboost\",\n                \"transaction_fraud_adaboost\"\
+      ,\n            ],\n            \"model_class\": [\n                \"sklearn.ensemble.RandomForestClassifier\"\
+      ,\n                \"sklearn.linear_model.LogisticRegression\",\n          \
+      \      \"sklearn.ensemble.AdaBoostClassifier\",\n            ],\n        },\n\
+      \        hyper_param_options=HyperParamOptions(\n            strategy=\"list\"\
+      , selector=\"max.accuracy\"\n        ),\n        inputs={\"dataset\": feature_selection_run.outputs[\"\
+      top_features_vector\"]},\n        outputs=[\"model\", \"test_set\"],\n    ).after(feature_selection_run)\n\
+      \n    # test and visualize your model\n    test_func = project.get_function(\"\
+      evaluate\")\n    test_run = mlrun.run_function(\n        test_func,\n      \
+      \  name=\"evaluate\",\n        handler=\"evaluate\",\n        params={\n   \
+      \         \"label_columns\": project.get_param(\"label_column\", \"label\"),\n\
+      \            \"model\": train_run.outputs[\"model\"],\n            \"drop_columns\"\
+      : project.get_param(\"label_column\", \"label\"),\n        },\n        inputs={\"\
+      dataset\": train_run.outputs[\"test_set\"]},\n    ).after(train_run)\n\n   \
+      \ # Create a serverless function from the hub, add a feature enrichment router\n\
+      \    # This will enrich and impute the request with data from the feature vector\n\
+      \    serving_func = project.get_function(\"serving\")\n    serving_func.set_topology(\n\
+      \        \"router\",\n        mlrun.serving.routers.EnrichmentModelRouter(\n\
+      \            feature_vector_uri=\"short\", impute_policy={\"*\": \"$mean\"}\n\
+      \        ),\n        exist_ok=True,\n    )\n\n    # Enable model monitoring\n\
+      \    serving_func.set_tracking()\n\n    if mlrun.mlconf.is_ce_mode():\n    \
+      \    # Use default service\n        tsdb_profile = DatastoreProfileTDEngine(name=\"\
+      fraud-monitoring-tsdb\",\n                                        user='root',\n\
+      \                                        password='taosdata',\n            \
+      \                            host=f\"tdengine-tsdb.{os.environ.get('MLRUN_NAMESPACE',\
+      \ 'mlrun')}.svc.cluster.local\",\n                                        port='6041')\n\
+      \        project.register_datastore_profile(tsdb_profile)\n\n        kafka_host\
+      \ = os.environ.get('KAFKA_SERVICE_HOST', f\"kafka-stream.{os.environ.get('MLRUN_NAMESPACE',\
+      \ 'mlrun')}.svc.cluster.local\")\n        kafka_port = os.environ.get('KAFKA_SERVICE_PORT',\
+      \ '9092')\n\n        stream_profile = DatastoreProfileKafkaStream(\n       \
+      \     name='fraud-monitoring-stream',\n            brokers=f\"{kafka_host}:{kafka_port}\"\
+      ,\n            topics=[],\n        )\n        project.register_datastore_profile(stream_profile)\n\
+      \n        project.set_model_monitoring_credentials(\n            tsdb_profile_name=tsdb_profile.name,\n\
+      \            stream_profile_name=stream_profile.name,\n            replace_creds=True\n\
+      \        )\n\n    else:\n        project.set_model_monitoring_credentials(\n\
+      \            tsdb_profile_name='fraud-tsdb',\n            stream_profile_name='fraud-stream',\n\
+      \            replace_creds=True\n        )\n\n    serving_func.save()\n    #\
+      \ deploy the model server, pass a list of trained models to serve\n    deploy\
+      \ = project.deploy_function(\n        serving_func,\n        models=[{\"key\"\
+      : \"fraud\", \"model_path\": train_run.outputs[\"model\"]}],\n    ).after(train_run)\n"
+  source: git://github.com/mlrun/demo-fraud.git
+  conda: ''
+status:
+  state: online
+metadata:
+  name: fraud-demo-jovyan
+  created: '2025-12-11T08:42:05.811000'

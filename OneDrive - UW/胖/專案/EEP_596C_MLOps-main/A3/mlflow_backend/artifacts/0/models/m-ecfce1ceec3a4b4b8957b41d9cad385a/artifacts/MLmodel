@@ -1,0 +1,29 @@
+artifact_path: file:C:/Users/bhbor/Documents/GitHub/bohanc2-mlops-f25/A2/mlflow_backend/artifacts/0/models/m-ecfce1ceec3a4b4b8957b41d9cad385a/artifacts
+flavors:
+  python_function:
+    cloudpickle_version: 3.1.1
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.13.9
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.5.1
+model_id: m-ecfce1ceec3a4b4b8957b41d9cad385a
+model_size_bytes: 2532
+model_uuid: m-ecfce1ceec3a4b4b8957b41d9cad385a
+prompts: null
+run_id: c6419d5eb43f491690233f8b9b07200b
+saved_input_example_info:
+  artifact_path: input_example.json
+  serving_input_path: serving_input_example.json
+  type: ndarray
+signature:
+  inputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float64", "shape": [-1, 13]}}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float64", "shape": [-1]}}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-10-29 21:38:49.202735'
